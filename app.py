@@ -14,7 +14,7 @@ from redis import asyncio as aioredis
 from utils.api_v2 import router as v2_router
 from utils.dependencies import provider, redisVRS
 from utils.models import ApiUuidRequest, PrettyJSONResponse
-from utils.settings import REDIS_HOST
+from utils.settings import REDIS_HOST, VRS_API_ONLY
 
 import subprocess
 
@@ -55,7 +55,8 @@ app = FastAPI(
     },
 )
 
-app.include_router(v2_router)
+if (not VRS_API_ONLY):
+    app.include_router(v2_router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory=PROJECT_PATH / "templates")
@@ -77,7 +78,7 @@ def docs_override():
 
 @app.on_event("startup")
 async def startup_event():
-    await provider.startup()
+    if (not VRS_API_ONLY): await provider.startup()
     redis = aioredis.from_url(REDIS_HOST, encoding="utf8", decode_responses=True)
     FastAPICache.init(RedisBackend(redis), prefix="api")
     redisVRS.redis_connection_string = REDIS_HOST
@@ -91,98 +92,99 @@ async def shutdown_event():
     await redisVRS.shutdown()
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def index(
-    request: Request, x_original_forwarded_for: str | None = Header(default=None)
-):
-    """
-    Return the index.html page with the client numbers.
-    """
-    client_ip = x_original_forwarded_for
-    clients_beast = provider.get_clients_per_client_ip(client_ip)
-    clients_mlat = provider.mlat_clients_to_list(client_ip)
-    context = {
-        "clients_beast": clients_beast,
-        "clients_mlat": clients_mlat,
-        "ip": client_ip,
-        "len_beast": len(provider.beast_clients),
-        "len_mlat": len(provider.mlat_clients),
-        "request": request,
-    }
-    response = templates.TemplateResponse("index.html", context)
-    return response
+if (not VRS_API_ONLY):
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def index(
+        request: Request, x_original_forwarded_for: str | None = Header(default=None)
+    ):
+        """
+        Return the index.html page with the client numbers.
+        """
+        client_ip = x_original_forwarded_for
+        clients_beast = provider.get_clients_per_client_ip(client_ip)
+        clients_mlat = provider.mlat_clients_to_list(client_ip)
+        context = {
+            "clients_beast": clients_beast,
+            "clients_mlat": clients_mlat,
+            "ip": client_ip,
+            "len_beast": len(provider.beast_clients),
+            "len_mlat": len(provider.mlat_clients),
+            "request": request,
+        }
+        response = templates.TemplateResponse("index.html", context)
+        return response
 
 
-@app.get("/api/0/receivers", response_class=PrettyJSONResponse, include_in_schema=False)
-async def receivers():
-    return provider.beast_receivers
+    @app.get("/api/0/receivers", response_class=PrettyJSONResponse, include_in_schema=False)
+    async def receivers():
+        return provider.beast_receivers
 
 
-@app.get(
-    "/api/0/mlat-server/0A/sync.json",
-    response_class=PrettyJSONResponse,
-    include_in_schema=False,
-)
-async def mlat_receivers():
-    return provider.mlat_sync_json
+    @app.get(
+        "/api/0/mlat-server/0A/sync.json",
+        response_class=PrettyJSONResponse,
+        include_in_schema=False,
+    )
+    async def mlat_receivers():
+        return provider.mlat_sync_json
 
 
-@app.get(
-    "/api/0/mlat-server/totalcount.json",
-    response_class=PrettyJSONResponse,
-    include_in_schema=False,
-)
-async def mlat_totalcount_json():
-    return provider.mlat_totalcount_json
+    @app.get(
+        "/api/0/mlat-server/totalcount.json",
+        response_class=PrettyJSONResponse,
+        include_in_schema=False,
+    )
+    async def mlat_totalcount_json():
+        return provider.mlat_totalcount_json
 
 
-@app.post("/api/0/uuid", response_class=PrettyJSONResponse, include_in_schema=False)
-async def post_uuid(data: ApiUuidRequest):
-    generated_uuid = str(uuid.uuid4())
-    json_log = orjson.dumps({"uuid": generated_uuid, "data": data.dict()})
-    print(json_log)
-    return {"uuid": generated_uuid}
+    @app.post("/api/0/uuid", response_class=PrettyJSONResponse, include_in_schema=False)
+    async def post_uuid(data: ApiUuidRequest):
+        generated_uuid = str(uuid.uuid4())
+        json_log = orjson.dumps({"uuid": generated_uuid, "data": data.dict()})
+        print(json_log)
+        return {"uuid": generated_uuid}
 
 
-@app.get("/metrics", include_in_schema=False)
-async def metrics():
-    """
-    Return metrics for Prometheus
-    """
-    metrics = [
-        "adsb_api_beast_total_receivers {}".format(len(provider.beast_receivers)),
-        "adsb_api_beast_total_clients {}".format(len(provider.beast_clients)),
-        "adsb_api_mlat_total {}".format(len(provider.mlat_sync_json)),
-        "adsb_api_aircraft_total {}".format(provider.aircraft_totalcount),
-    ]
-    return Response(content="\n".join(metrics), media_type="text/plain")
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        """
+        Return metrics for Prometheus
+        """
+        metrics = [
+            "adsb_api_beast_total_receivers {}".format(len(provider.beast_receivers)),
+            "adsb_api_beast_total_clients {}".format(len(provider.beast_clients)),
+            "adsb_api_mlat_total {}".format(len(provider.mlat_sync_json)),
+            "adsb_api_aircraft_total {}".format(provider.aircraft_totalcount),
+        ]
+        return Response(content="\n".join(metrics), media_type="text/plain")
 
 
-@app.get("/api/0/me", response_class=PrettyJSONResponse, tags=["v0"])
-async def api_me(
-    x_original_forwarded_for: str | None = Header(default=None, include_in_schema=False)
-):
-    client_ip = x_original_forwarded_for
-    my_beast_clients = provider.get_clients_per_client_ip(client_ip)
-    mlat_clients = provider.mlat_clients_to_list(client_ip)
-    response = {
-        "feeding": {
-            "beast": len(my_beast_clients) > 0,
-            "mlat": len(mlat_clients) > 0,
-        },
-        "clients": {
-            "beast": my_beast_clients,
-            "mlat": mlat_clients,
-        },
-        "client_ip": client_ip,
-        "global": {
-            "beast": len(provider.beast_clients),
-            "mlat": len(provider.mlat_clients),
-            "planes": provider.aircraft_totalcount,
-        },
-    }
+    @app.get("/api/0/me", response_class=PrettyJSONResponse, tags=["v0"])
+    async def api_me(
+        x_original_forwarded_for: str | None = Header(default=None, include_in_schema=False)
+    ):
+        client_ip = x_original_forwarded_for
+        my_beast_clients = provider.get_clients_per_client_ip(client_ip)
+        mlat_clients = provider.mlat_clients_to_list(client_ip)
+        response = {
+            "feeding": {
+                "beast": len(my_beast_clients) > 0,
+                "mlat": len(mlat_clients) > 0,
+            },
+            "clients": {
+                "beast": my_beast_clients,
+                "mlat": mlat_clients,
+            },
+            "client_ip": client_ip,
+            "global": {
+                "beast": len(provider.beast_clients),
+                "mlat": len(provider.mlat_clients),
+                "planes": provider.aircraft_totalcount,
+            },
+        }
 
-    return response
+        return response
 
 
 @app.get(
